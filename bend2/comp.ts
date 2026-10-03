@@ -6193,9 +6193,18 @@ function io_sys() {
   return globalThis.BEND_SYS;
 }
 
+// strerror needs bun:ffi; a host without it (node) gets the bare errno.
+function io_strerror(code) {
+  try {
+    return String(io_sys().strerror(code));
+  } catch (_) {
+    return "errno " + code;
+  }
+}
+
 function io_fail(code) {
   return { $: "Fail",
-    error: io_tup(code >>> 0, String(io_sys().strerror(code))) };
+    error: io_tup(code >>> 0, io_strerror(code)) };
 }
 
 function io_done(value) {
