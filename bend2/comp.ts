@@ -4856,8 +4856,9 @@ static void gpu_fail(NSError* err) {
   err_fail([[err localizedDescription] UTF8String]);
 }
 
-static bool gpu_probe(void) {
-  return (gpu_dev = MTLCreateSystemDefaultDevice()) != nil;
+static const char* gpu_probe(void) {
+  gpu_dev = MTLCreateSystemDefaultDevice();
+  return gpu_dev == nil ? "this binary found no usable Metal GPU" : NULL;
 }
 
 static MTLComputePipelineDescriptor* gpu_desc(void) {
@@ -4966,21 +4967,45 @@ static void gpu_shape(int units) {
   CUBE_LOG = 31 - CLZ(units < 16 ? 16 : units > 128 ? 128 : units);
 }
 
-static bool gpu_probe(void) {
-  int       managed = 0;
+#define GPU_CHECK(fn, ...) do { \
+  if ((result = fn(__VA_ARGS__)) != CUDA_SUCCESS) { why = #fn; goto fail; } \
+} while (0)
+
+static const char* gpu_probe(void) {
+  static char error[192];
+  const char* why;
+  CUresult result;
+  int managed = 0;
   CUcontext ctx;
   setenv("CUDA_DEVICE_MAX_CONNECTIONS", "1", 0);
-  if (cuInit(0) == CUDA_SUCCESS && cuDeviceGet(&gpu_dev, 0) == CUDA_SUCCESS) {
-    cuDeviceGetAttribute(&managed,
-      CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS, gpu_dev);
+  GPU_CHECK(cuInit, 0);
+  GPU_CHECK(cuDeviceGet, &gpu_dev, 0);
+  GPU_CHECK(cuDeviceGetAttribute, &managed,
+    CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS, gpu_dev);
+  if (managed == 0) {
+    return "CUDA device lacks concurrent managed access (WSL2 lacks it)";
   }
   int l2 = 1 << 23;
   cuDeviceGetAttribute(&l2, CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE, gpu_dev);
   gpu_shape(l2 >> 16);
-  return managed != 0
-    && cuDevicePrimaryCtxRetain(&ctx, gpu_dev) == CUDA_SUCCESS
-    && cuCtxSetCurrent(ctx) == CUDA_SUCCESS;
+  GPU_CHECK(cuDevicePrimaryCtxRetain, &ctx, gpu_dev);
+  result = cuCtxSetCurrent(ctx);
+  if (result != CUDA_SUCCESS) {
+    cuDevicePrimaryCtxRelease(gpu_dev);
+    why = "cuCtxSetCurrent";
+    goto fail;
+  }
+  return NULL;
+fail:;
+  const char* name = NULL;
+  if (cuGetErrorName(result, &name) != CUDA_SUCCESS || name == NULL) {
+    name = "unknown CUDA error";
+  }
+  snprintf(error, sizeof error, "%s failed: %s", why, name);
+  return error;
 }
+
+#undef GPU_CHECK
 
 static u64* gpu_map(u64 bytes) {
   CUdeviceptr p = 0;
@@ -5082,7 +5107,7 @@ static void gpu_pass(u32 f) {
 
 #else
 
-#define gpu_probe() false
+#define gpu_probe() "this binary has no CUDA or Metal GPU support"
 #define gpu_make(p) true
 #define gpu_span()  0
 #define gpu_load(b)
@@ -5903,7 +5928,7 @@ int main(int argc, char** argv) {
       printf(CLI_HELP, argv[0]);
       return 0;
     } else if (strcmp(a, "--gpu-build") == 0) {
-      if (gpu_probe() && !gpu_make(gpu_path())) {
+      if (gpu_probe() == NULL && !gpu_make(gpu_path())) {
         fprintf(stderr, "bend: cannot write %s\n", gpu_path());
         return 1;
       }
@@ -5933,11 +5958,11 @@ int main(int argc, char** argv) {
       io_argv[io_argc++] = argv[i];
     }
   }
-  bool dev = gpu != 0 && BANGS != 0 && gpu_probe();
-  if (gpu == 1 && BANGS != 0 && !dev) {
-    err_fail("--gpu on, but this binary found no usable GPU (a CUDA GPU needs"
-      " concurrent managed access, which WSL2's lack)");
+  const char* why = gpu != 0 && BANGS != 0 ? gpu_probe() : "";
+  if (gpu == 1 && BANGS != 0 && why != NULL) {
+    err_fail(why);
   }
+  bool dev = why == NULL;
   io_loop(corpus_setup(dev, thr > 0 ? thr : cpu_count(), mem));
   io_sync();
   return 0;
