@@ -749,7 +749,9 @@ function book_promises(book: Bend.Book): string[] {
       for (const c of t.$ === "ADT" ? [t, ...t.c] : [t]) {
         term_refs(Bend.term_lower(c.T), rs);
       }
-      term_refs(t.$ === "Def" ? t.e : undefined, rs);
+      if (t.$ === "Def" && t.e !== undefined) {
+        term_refs(t.e, rs);
+      }
       for (const r of rs) {
         (uses[r] ??= []).push(k);
         q.add(r);
@@ -763,15 +765,18 @@ function book_promises(book: Bend.Book): string[] {
 }
 
 // term_refs adds to out the names a term (a span skipped) refers to.
-function term_refs(tm: unknown, out: Set<string>): void {
-  if (typeof tm === "object" && tm !== null) {
-    const { $, k } = tm as { $?: string; k?: string };
-    if (($ === "Ref" || $ === "ADT") && k !== undefined) {
-      out.add(k);
+function term_refs(t: object, out: Set<string>): void {
+  const seen = new Set([t]);
+  for (const todo = [t]; todo.length > 0;) {
+    const x = todo.pop() as Record<string, unknown>;
+    if ((x.$ === "Ref" || x.$ === "ADT") && typeof x.k === "string") {
+      out.add(x.k);
     }
-    for (const [f, v] of Object.entries(tm)) {
-      if (f !== "s") {
-        term_refs(v, out);
+    for (const f in x) {
+      const v = x[f];
+      if (f !== "s" && typeof v === "object" && v !== null && !seen.has(v)) {
+        seen.add(v);
+        todo.push(v);
       }
     }
   }
