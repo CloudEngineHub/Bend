@@ -1650,17 +1650,17 @@ function val_to(fl: File, v: Val, lay: Lay): Val {
 function val_arms(fl: File, lay: Lay, sel: string, read: (k: Name) => Val[],
   cond = (t: string, i: number) => `${t} == ${i}`): Val {
   const arms = Object.keys(lay.arms!);
-  const ws = (k: Name) => read(k).flatMap((f, j) =>
-    val_to(fl, f, lay.arms![k][j]).ws);
+  const ws = (al: File, k: Name) => read(k).flatMap((f, j) =>
+    val_to(al, f, lay.arms![k][j]).ws);
   if (arms.length <= 1) {
-    return val_new(arms.flatMap(ws), lay);
+    return val_new(arms.flatMap((k) => ws(fl, k)), lay);
   }
   const out = emit_dst(fl, lay, "o").ws;
   const t = emit_alias(fl, sel, "t");
   const rs: string[][] = out.map(() => []);
   emit_chain(fl, (i) => cond(t, i), arms.map((k, i) => () => {
     file_push(fl, `${out[0]} = ${i};`);
-    ws(k).forEach((w, n) => {
+    ws({ ...fl, spares: [] }, k).forEach((w, n) => {
       rs[1 + n].push(fl.brwl.get(w) ?? "");
       file_push(fl, `${out[1 + n]} = ${w};`);
     });
@@ -1687,11 +1687,8 @@ function val_box(fl: File, v: Val): string {
   }
   const out = emit_hold(fl, ["0"], "b")[0];
   const tag = emit_alias(fl, v.ws[0], "t");
-  emit_chain(fl, (i) => `${tag} == ${i}`, arms.map((k) => () => {
-    const bl = { ...fl, spares: [] };
-    file_push(bl, `${out} = ${build(bl, k)};`);
-    spare_flush(bl);
-  }));
+  emit_chain(fl, (i) => `${tag} == ${i}`, arms.map((k) => () =>
+    file_push(fl, `${out} = ${build({ ...fl, spares: [] }, k)};`)));
   return out;
 }
 
