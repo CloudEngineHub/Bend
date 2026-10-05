@@ -2751,7 +2751,6 @@ export function compile_book(book: Bend.Book): string {
   const fl = file_book(book, ["main", ...RUNTIME_ADTS, ...fams], false);
   const facts = () => fl.own.size + fl.hot.size + fl.stat.size;
   let was: number;
-  let reqs: string;
   do {
     was = facts();
     [fl.lend, fl.spun, fl.clos, fl.tabs, fl.lits, fl.consts, BRWS]
@@ -2766,7 +2765,6 @@ export function compile_book(book: Bend.Book): string {
       fl.segs.push(dl.seg);
       emit_body(dl, fun_of(fl, k).h!, tld.T, [], vals, null);
     }
-    reqs = effect_srcs(fl, ".c", "no .c import: ").join("");
     for (const [k] of done_defs(fl, def_foreign)) {
       const qp = [...fun_of(fl, k).live.map(([, n]) => name_local(fl, n)),
         name_local(fl, "k")];
@@ -2869,7 +2867,7 @@ export function compile_book(book: Bend.Book): string {
     die("an unbound name in the emitted C");
   }
   return c_ids(fl, runtime_c([tabs, ...desc].join("\n\n"), spins, segs,
-    reqs));
+    effect_srcs(fl, ".c", "no .c import: ").join("")));
 }
 
 // JS
