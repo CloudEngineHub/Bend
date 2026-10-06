@@ -154,8 +154,6 @@ const MODEL_DEPTH = 8;
 // only this compiler release may build a cached kernel
 const LEAN_VERSION = "4.34.0";
 
-const NOT_FN = new Set(["Typ", "Qnt", "Qua", "Min", "All", "ADT", "Ctr", "Lit", "Eql", "Rfl"]);
-
 // Errors
 // ======
 
@@ -203,9 +201,7 @@ function safe_pass(book: Book, groups: Map<Name, Group>, inst: Safe["inst"]): { 
   const e: Safe = { book, mb: { ...book, tlds: Object.create(book.tlds) as Book["tlds"] }, out: [], names: new Map(), seen: new Set(),
     todo: [], taken: new Set(), fail: new Map(), groups, inst, stack: [], going: new Set(), grew: false, consts: new Map() };
   const roots: Array<[Name, string]> = [];
-  const last = new Map<Name, number>();
-  book.order.forEach((k, i) => last.set(k, i));
-  for (const k of book.order.filter((k, i) => last.get(k) === i && book.tlds[k].b !== true)) {
+  for (const k of [...new Set([...book.order].reverse())].reverse().filter((k) => book.tlds[k].b !== true)) {
     try {
       roots.push(...root_cols(e, k, book.tlds[k].T, 0).map((cols): [Name, string] => [k, item_try(e, k, cols)]));
     } catch (x) {
@@ -673,7 +669,7 @@ function tree(e: Safe, s: Scope, t: HTerm, fs: Chain[]): O {
     return { $: "Mat", k: "()", h: convoy_bind(e, s, top.cv, t, fs.slice(0, -1)), m: { $: "Efq" } };
   }
   const [x, T] = open(t);
-  const all = NOT_FN.has(x.$) ? null : all_of(e, T);
+  const all = all_of(e, T);
   // a specialized column takes its argument: a λ binds it (no kernel
   // binder), a match goes to the arm it takes, whose fields it binds so
   const v = top === undefined ? s.cols[0] ?? null : null;
@@ -1234,7 +1230,7 @@ function arm(e: Safe, s: Scope, k: Name, cols: Cols, vs: Array<[Q, O]>): O {
 function arg_term(e: Safe, s: Scope, x: HTerm, A: HTerm, live: boolean): O {
   const [y, T] = open(x);
   const tree = y.$ === "Lam" || y.$ === "Mat" || y.$ === "Efq";
-  const all = tree || NOT_FN.has(y.$) ? null : all_of(e, A);
+  const all = tree || y.$ === "Ctr" ? null : all_of(e, A);
   if (all !== null && (!(live && s.sub) || T !== null && !qsig_eq(e, T, A, s.d))) {
     return term(e, s, eta(x, all), live);
   }
