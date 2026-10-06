@@ -674,7 +674,7 @@ function term_spine(tm: HTerm): Spine {
     }
     const tld = c.$ === "Ref" ? FL.book.tlds[c.k] : undefined;
     const T = tld?.$ === "Def" ? tld.T : ty_ann(h);
-    const qs = T === null ? [] : tele_unbind(T).doms;
+    const qs = T === null || apps.length === 0 ? [] : tele_unbind(T).doms;
     const live = apps.map((_, i) => i >= qs.length || dom_live(qs[i]));
     const all = apps.map((a) => a.x);
     const args = all.filter((_, i) => live[i]);
@@ -828,7 +828,10 @@ function op_name(k: Name): string {
 // ====
 
 function tele_unbind(T: HTerm): { doms: Dom[]; ret: HTerm } {
-  return memo(FL.teles, T, () => Bend.tele_unbind(FL.book, T));
+  return memo(FL.teles, T, () => {
+    const { doms, ret } = Bend.tele_unbind(FL.book, T);
+    return { doms: doms.map(([q, k, A]): Dom => [q, k, Bend.term_wnf(FL.book, A)]), ret };
+  });
 }
 
 // Ty
@@ -911,6 +914,11 @@ function type_adts(T: HTerm): Name[] {
       return [];
     }
   }
+}
+
+function tele_adts(T: HTerm, j = 0): Name[] {
+  const { doms, ret } = tele_unbind(T);
+  return [...doms.slice(j).flatMap(([, , A]) => type_adts(A)), ...type_adts(ret)];
 }
 
 // Lay
@@ -1183,8 +1191,8 @@ function fun_of(k: Name): Fun {
     if (def_foreign(tld)) {
       return { n, h, live, lays: [...lays.map(() => BOX), BOX], ret: BOX };
     }
-    const ret = lay_of(Bend.tele_fill(FL.book, tld.T,
-      Array(n).fill(DUMMY), Bend.ctx_nil()));
+    const ret = lay_of(n === doms.length ? tele_unbind(tld.T).ret
+      : Bend.tele_fill(FL.book, tld.T, Array(n).fill(DUMMY), Bend.ctx_nil()));
     const wide = lays.flatMap((l) => l.ks).length > WIDE;
     return { n, h, live, lays: lays.map((l) => wide && l.ks.length > 1 ? BOX
       : l), ret: ret.ks.length === 0 ? BOX : ret };
@@ -1385,7 +1393,7 @@ function file_book(roots: Name[]): void {
     const tld = FL.book.tlds[d];
     FL.srcs.set(d, null);
     for (const x of tld?.$ === "ADT" ? tld.c : tld ? [tld] : []) {
-      queue.push(...type_adts(x.T));
+      queue.push(...tele_adts(x.T));
     }
     if (!done_live(tld)) {
       continue;
@@ -1393,9 +1401,19 @@ function file_book(roots: Name[]): void {
     const deps = new Set<Name>();
     const refs = new Set<Name>();
     let flat = true;
-    term_any(fun_of(d).h!, (s, tail) => {
+    const { n, h } = fun_of(d);
+    const sig = new Map<HTerm, number>();
+    for (let t = term_force(h!), j = 0; t.$ === "Ann";) {
+      sig.set(t, j);
+      const x = term_force(t.x);
+      t = x.$ === "Lam" && j < n ? (j++, term_force(term_open(x).b)) : x;
+    }
+    term_any(h!, (s, tail) => {
       if (s.$ === "Ann") {
-        queue.push(...type_adts(s.T));
+        const x = term_force(s.x);
+        queue.push(...(sig.has(s) ? tele_adts(tld.T, sig.get(s))
+          : x.$ === "Ref" && FL.book.tlds[x.k] && intr_of(x.k) === undefined
+          ? tele_adts(FL.book.tlds[x.k].T) : type_adts(s.T)));
       }
       if (s.$ === "Ref") {
         if (s.b) {
