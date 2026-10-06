@@ -1035,6 +1035,12 @@ function ctr_flds(k: Name, xs: HTerm[]): HTerm[] {
 }
 
 function ctr_build(sc: Scope, k: Name, exprs: string[], stat = false): string {
+  if (FL.book.ctrs[k]) {
+    const fam = Bend.book_fam(FL.book, k);
+    if (!FL.srcs.has(fam)) {
+      FL.srcs.set(fam, null);
+    }
+  }
   const cid = cid_mac(k);
   if (lay_node(k).ks.join() === "w32" || exprs.length === 0) {
     return `term_pak(${cid}, ${exprs[0] ?? 0})`;
