@@ -684,8 +684,10 @@ function tree(e: Safe, s: Scope, t: HTerm, fs: Chain[]): O {
     const f = tree(e, s2, typed(x.f(y), all?.B(y)), fs2);
     if (q === 1 && uses(f, l) > 1) {
       // bend2 checks a ~ argument dead, so its λ may use a linear variable
-      // twice: it matches the variable once and rebuilds it at each use
-      if (all !== null && kind(e, s, all.A) === 1) {
+      // twice: it matches the variable once and rebuilds it at each use,
+      // unless its type reduces to Data (a match-refined view): copied
+      const A = all === null ? null : B.term_wnf(e.book, all.A);
+      if (all !== null && kind(e, s, all.A) === 1 && A!.$ !== "Eql" && kind(e, s, A!) !== 2) {
         return tree(e, s, rebuild(e, s, x, all) ?? oos("a λ that uses a variable twice, of a type whose fields are not Data (a ~ argument)"), fs);
       }
       q = 2;
