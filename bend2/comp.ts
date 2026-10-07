@@ -5381,7 +5381,7 @@ typedef struct IoWork {
 
 typedef Term (*Effect)(Env e, Term* f, IoWork* w);
 
-Effect io_eff_rows[1 << 16];
+Effect io_eff_rows[sizeof CID_T / sizeof *CID_T];
 static u32    io_live;
 
 static u64 io_tick(void) {
