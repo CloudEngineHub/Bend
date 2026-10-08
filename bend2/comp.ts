@@ -867,20 +867,32 @@ function adt_of(A: HTerm | null): Of<"ADT"> {
 function ty_holds(A: HTerm | null,
   p: (t: HTerm | null) => boolean | null, seen = new Set<Name>()): boolean {
   const t = ty_wnf(A);
+  if (t?.$ === "Lam") {
+    return ty_holds(t.f(DUMMY), p, seen);
+  }
   const got = p(t);
   if (got !== null || t?.$ !== "ADT") {
     return got === true;
   }
-  if (t.x.some((x) => ty_holds(x, p, seen))) {
+  const tld = FL.book.tlds[t.k];
+  const ks = tld?.$ === "ADT" ? tele_unbind(tld.T).doms : [];
+  if (t.x.some((x, i) => !ty_value(ks[i]?.[2] ?? null)
+    && ty_holds(x, p, seen))) {
     return true;
   }
-  const tld = FL.book.tlds[t.k];
   if (tld?.$ !== "ADT" || seen.has(t.k)) {
     return false;
   }
   seen.add(t.k);
   return tld.c.some((c) =>
     ctr_doms(c, t.x).some((f) => ty_holds(f, p, seen)));
+}
+
+function ty_value(K: HTerm | null): boolean {
+  const k = ty_wnf(K);
+  return k?.$ === "All" ? ty_value(k.B(DUMMY)) : !ty_holds(k, (t) =>
+    t?.$ === "ADT" ? WORDS[t.k] ? false : null
+    : !["Qnt", "Eql"].includes(t?.$ ?? ""));
 }
 
 function ty_clo(A: HTerm | null): boolean {
