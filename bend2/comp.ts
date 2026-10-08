@@ -927,9 +927,14 @@ function type_adts(T: HTerm): Name[] {
 // A lay without arms is W32, W64 or BOX itself. An Array cell takes
 // the open layout of its element type (the return type of its
 // constructors), so all callers agree. lay_el refuses an open element
-// type, except equality and functions: their layouts do not depend on
-// the types of their sides or arguments. adt_of and js_expr call it only
-// for that check.
+// type: one that reduces to neither a datatype nor a type former (a type
+// variable, a hole, a law or family with no body). A former's layout,
+// lay_of's, does not depend on what its parts mention; a function is a
+// box even when its arguments are erased. adt_of and js_expr call it
+// only for that check.
+
+// The type formers besides ADT: function, equality, Type, Quant.
+const FORMERS: ReadonlySet<string> = new Set(["All", "Eql", "Typ", "Qnt"]);
 
 function lay_of(A: HTerm | null): Lay {
   const t = ty_adt(A);
@@ -950,11 +955,11 @@ function lay_of(A: HTerm | null): Lay {
 
 function lay_el(A: HTerm | null): Lay {
   const t = ty_wnf(A);
-  if (t?.$ === "Eql" || t?.$ === "All") {
-    return lay_of(A);
-  }
   if (t?.$ !== "ADT") {
-    die("an open Array element type");
+    if (!t || !FORMERS.has(t.$)) {
+      die("an open Array element type");
+    }
+    return lay_of(A);
   }
   const tld = FL.book.tlds[t.k];
   return lay_of(tld?.$ === "ADT" && tld.c[0]
