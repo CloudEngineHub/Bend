@@ -593,8 +593,8 @@ function view_of(e: string): string | undefined {
 
 function tpl_nat(u: string, f: string): Tpl {
   return ([p]) => /^\d/.test(p) ? BigInt(parseInt(p)) + 1n + u
-    : /^nat_chk\(.* \+ \d+n?\)$/.test(p)
-    ? p.replace(/\d+(?=n?\)$)/, (k) => String(+k + 1)) : tpl(f, [p]);
+    : /^nat_chk\(.* \+ \d+\)$/.test(p)
+    ? p.replace(/\d+(?=\)$)/, (k) => String(+k + 1)) : tpl(f, [p]);
 }
 
 // Probe
@@ -659,7 +659,7 @@ function let_open(ps: Of<"Var">[], vs: HTerm[], b: HTerm): Of<"Let"> {
 function let_live(t: Of<"Let">): boolean[] {
   const o = term_open(t);
   const u = term_uses(o.b);
-  return t.q.map((_, j) => term_use(u, o.ps[j]) > 0);
+  return o.ps.map((p) => term_use(u, p) > 0);
 }
 
 function term_spine(tm: HTerm): Spine {
@@ -768,20 +768,12 @@ function term_use(u: Bend.PMap<number>, p: Of<"Var">): number {
 function term_uses(tm: HTerm): Bend.PMap<number> {
   return memo(FL.memo.uses, tm, () => {
     const t = term_force(tm);
-    switch (t.$) {
-      case "Var": {
-        const p = probe_of(t);
-        return p === DUMMY ? USE0 : Bend.pmap_set(USE0, p.i, 1);
-      }
-      case "Mat": {
-        return Bend.pmap_union(term_uses(t.h),
-          term_uses(t.m), Math.max);
-      }
-      default: {
-        return term_kids(t).reduce((u, x) =>
-          Bend.pmap_union(u, term_uses(x), (a, b) => a + b), USE0);
-      }
+    if (t.$ === "Var") {
+      return t.i === DUMMY.i ? USE0 : Bend.pmap_set(USE0, t.i, 1);
     }
+    const add = t.$ === "Mat" ? Math.max : (a: number, b: number) => a + b;
+    return term_kids(t).reduce((u, x) =>
+      Bend.pmap_union(u, term_uses(x), add), USE0);
   });
 }
 
@@ -893,7 +885,7 @@ function ty_holds(A: HTerm | null,
 
 function ty_clo(A: HTerm | null): boolean {
   return ty_holds(A, (t) => t?.$ === "ADT"
-    ? WORDS[t.k] !== undefined ? false : null
+    ? WORDS[t.k] ? false : null
     : !["Typ", "Qua", "Min", "Eql"].includes(t?.$ ?? ""));
 }
 
@@ -908,7 +900,7 @@ function type_adts(T: HTerm): Name[] {
     }
     case "ADT": {
       return [...WORDS[t.k] === undefined && t.k !== "Array"
-        ? [t.k] : [], ...t.x.flatMap((x) => type_adts(x))];
+        ? [t.k] : [], ...t.x.flatMap(type_adts)];
     }
     default: {
       return [];
@@ -921,11 +913,12 @@ function type_adts(T: HTerm): Name[] {
 
 // An Array, an IO.OP, a recursive datatype, and a datatype with a field
 // that re-enters it under layout (a family hid the cycle) are one box.
-// An Array cell takes the open layout of its element type (the return
-// type of its constructors), so all callers agree. lay_el refuses an
-// open element type, except equality: its sides may mention type variables,
-// since its layout does not depend on them. adt_of and js_expr call it
-// only for that check.
+// A lay without arms is W32, W64 or BOX itself. An Array cell takes
+// the open layout of its element type (the return type of its
+// constructors), so all callers agree. lay_el refuses an open element
+// type, except equality: its sides may mention type variables, since its
+// layout does not depend on them. adt_of and js_expr call it only for
+// that check.
 
 function lay_of(A: HTerm | null): Lay {
   const t = ty_adt(A);
@@ -939,7 +932,7 @@ function lay_of(A: HTerm | null): Lay {
     }
     FL.lays.set(key, BOX);
     const lay = lay_pack(tld.c.map((c) =>
-      [c.k, ctr_doms(c, t.x).map((A) => lay_of(A))]));
+      [c.k, ctr_doms(c, t.x).map(lay_of)]));
     return lay.ks.length > WIDE ? BOX : lay;
   });
 }
@@ -973,7 +966,7 @@ function lay_pack(arms: [Name, Lay[]][]): Lay {
 function lay_node(k: Name): Lay {
   return memo(FL.nodes, k, () => {
     const lay = lay_pack([[k, (FL.book.ctrs[k] ? ctr_doms(FL.book.ctrs[k])
-      : []).map((A) => lay_of(A))]]);
+      : []).map(lay_of)]]);
     while (lay.ks.length > WIDE && lay.ks.length & (lay.ks.length - 1)) {
       lay.ks.push("w32");
     }
@@ -991,10 +984,6 @@ function lay_c(k: Kind): string {
 
 function lay_packed(lay: Lay): boolean {
   return ["", "w32"].includes(lay.ks.join());
-}
-
-function lay_box(lay: Lay): boolean {
-  return lay.arms === null && lay.ks[0] === "box";
 }
 
 function lay_arr(lay: Lay) {
@@ -1188,10 +1177,10 @@ function fun_of(k: Name): Fun {
     const n = tld.n + (h === null ? 0
       : Math.min(def_raise(h, tld.n), doms.length - tld.n));
     const live = doms.slice(0, n).filter(dom_live);
-    const lays = live.map(([, , A]) => lay_of(A));
     if (def_foreign(tld)) {
-      return { n, h, live, lays: [...lays.map(() => BOX), BOX], ret: BOX };
+      return { n, h, live, lays: Array(live.length + 1).fill(BOX), ret: BOX };
     }
+    const lays = live.map(([, , A]) => lay_of(A));
     const ret = lay_of(Bend.tele_fill(FL.book, tld.T,
       Array(n).fill(DUMMY), Bend.ctx_nil()));
     const wide = lays.flatMap((l) => l.ks).length > WIDE;
@@ -1564,21 +1553,19 @@ function seg_name(sc: Scope, stem: string): string {
 
 function seg_open(sc: Scope, name: string, ret: Lay, frame: Seg["frame"],
   live: [Of<"Var">, Bind][], res: Val, rest: HTerm[]): Scope {
-  const olds = live.flatMap(([, b]) => b.val.ws);
-  const news = olds.map((w) => name_local(sc, w.replace(/_\d+$/, "")));
-  const seg = seg_new(name, ret, [...news, ...res.ws],
-    [...live.flatMap(([, b]) => b.val.lay.ks), ...res.lay.ks], frame);
+  const vals = live.map(([, b]) => val_new(b.val.ws.map((w) => {
+    const nw = name_local(sc, w.replace(/_\d+$/, ""));
+    if (sc.brwl.has(w)) {
+      sc.brwl.set(nw, sc.brwl.get(w)!);
+    }
+    return nw;
+  }), b.val.lay));
+  const all = [...vals, res];
+  const seg = seg_new(name, ret, all.flatMap((v) => v.ws),
+    all.flatMap((v) => v.lay.ks), frame);
   FL.segs.push(seg);
   sc = { ...sc, seg, spares: [], uses: new Map() };
-  olds.forEach((w, i) => {
-    if (sc.brwl.has(w)) {
-      sc.brwl.set(news[i], sc.brwl.get(w)!);
-    }
-  });
-  let i = 0;
-  live.forEach(([p, b]) => bind_uses(sc, p,
-    val_new(news.slice(i, i += b.val.ws.length), b.val.lay), rest, b.A,
-    false));
+  live.forEach(([p, b], i) => bind_uses(sc, p, vals[i], rest, b.A, false));
   return sc;
 }
 
@@ -1598,8 +1585,7 @@ function node_fields(sc: Scope, t: string, k: Name, tail = false): Val[] {
   const node = lay_node(k);
   const n = node.ks.length;
   if (lay_packed(node)) {
-    return node.arms![k].map((lay) =>
-      val_new(lay.ks.map(() => `term_loc(${t})`), lay));
+    return val_arm(val_new(node.ks.map(() => `term_loc(${t})`), node));
   }
   const r = sc.brwl.get(t);
   const z = r === undefined && (FL.hot.has(k) || FL.stat.has(k));
@@ -1614,6 +1600,7 @@ function node_fields(sc: Scope, t: string, k: Name, tail = false): Val[] {
   }
   file_push(sc, `u64 ${sp} = ${at};`);
   const ws = emit_hold(sc, node.ks.map((_, j) => `${fb}${j}]`), "f", node.ks);
+  const spare = { words: n, name: sp, z };
   if (r !== undefined) {
     ws.forEach((w, j) => {
       if (node.ks[j] === "box") {
@@ -1621,9 +1608,9 @@ function node_fields(sc: Scope, t: string, k: Name, tail = false): Val[] {
       }
     });
   } else if (tail) {
-    sc.spares.push({ words: n, name: sp, z });
+    sc.spares.push(spare);
   } else {
-    spare_free(sc, { words: n, name: sp, z });
+    spare_free(sc, spare);
   }
   return val_arm(val_new(ws, node));
 }
@@ -1678,8 +1665,8 @@ function val_sink(sc: Scope, v: Val): void {
 }
 
 function val_to(sc: Scope, v: Val, lay: Lay): Val {
-  return lay_eq(v.lay, lay) ? v : lay_box(lay) ? val_new([val_box(sc, v)], BOX)
-    : lay_box(v.lay) ? val_unbox(sc, v, lay)
+  return lay_eq(v.lay, lay) ? v : lay === BOX ? val_new([val_box(sc, v)], BOX)
+    : v.lay === BOX ? val_unbox(sc, v, lay)
     : val_arms(sc, lay, v.ws[0], (k) => val_arm(v, k));
 }
 
@@ -1826,7 +1813,7 @@ function bind_uses(sc: Scope, p: Of<"Var">, v: Val, rest: HTerm[], A: HTerm,
   fresh = true): void {
   const n = rest_use(rest, p);
   const lay = lay_of(A);
-  if (fresh && n > 1 && lay_box(v.lay) && !lay_box(lay) && !val_brw(sc, v)) {
+  if (fresh && n > 1 && v.lay === BOX && lay !== BOX && !val_brw(sc, v)) {
     v = val_unbox(sc, v, lay);
   }
   facts_hot(sc, A, FL.hot.has("*"));
@@ -1901,7 +1888,7 @@ function show_main(): (number | Name)[] | null {
     + " erased or dependent field)");
   const node = (T: HTerm, lay: Lay) => {
     const t = ty_wnf(T) as HTerm;
-    const box = lay_box(lay);
+    const box = lay === BOX;
     const key = Bend.term_key(Bend.term_lower(t));
     const ids = memo(lays, lay, () => new Map());
     const adt = ty_adt(t);
@@ -2236,18 +2223,18 @@ function emit_intr(sc: Scope, it: Intr, m: Spine, ty: HTerm | null): Val {
   const k = (m.t as Of<"Ref">).k;
   const args = emit_each(sc, m.args);
   const op = op_name(k);
+  const C = it.C!;
   if ("array_get array_new array_clone".includes(op)
     && lay_el(m.all[0]).ks.includes("box")
     && !(op === "array_new" && facts_packed(m.all[2]))) {
     facts_hot(sc, m.all[0], true);
   }
-  if (it.C === null) {
+  if (C === null) {
     return arr_op(sc, op, lay_el(m.all[0]), args);
   }
   const ws = args.map((v, i) =>
     val_own(sc, val_to(sc, v, fun_of(k).lays[i]))[0]);
   const lay = lay_of(ty);
-  const C = it.C!;
   const all = Array.isArray(C) || /\$(\d)[^]*\$\1/.test(C);
   const as = ws.map((w) => all || tpl_deep(w) ? emit_alias(sc, w, "a") : w);
   if (Array.isArray(C)) {
@@ -2281,7 +2268,7 @@ function emit_ctr(sc: Scope, x: Of<"Ctr">, ty: HTerm | null,
   }
   const flds = ctr_flds(x.k, x.x);
   const ctr = FL.book.ctrs[x.k];
-  const tys = () => ctr ? ctr_doms(ctr, adt.x) : [];
+  const tys = () => ctr_doms(ctr, adt.x);
   const word = WORDS[adt.k];
   if (word !== undefined) {
     const vs = emit_each(sc, flds, [], tys());
@@ -2312,7 +2299,7 @@ function emit_ctr(sc: Scope, x: Of<"Ctr">, ty: HTerm | null,
   if (got !== undefined) {
     return got;
   }
-  const lay = lay_box(pos) ? lay_node(x.k) : pos;
+  const lay = pos === BOX ? lay_node(x.k) : pos;
   const arms = Object.keys(lay.arms!);
   const vs = emit_each(sc, flds, lay.arms![x.k], tys());
   const ws = [...arms.length > 1 ? [String(arms.indexOf(x.k))] : [],
@@ -2334,8 +2321,7 @@ function emit_fold(t: HTerm): HTerm | null {
       return s;
     }
     const m = term_spine(s);
-    const it = m.t.$ === "Ref" ? intr_of(m.t.k) : undefined;
-    if (it === undefined) {
+    if (m.t.$ !== "Ref" || intr_of(m.t.k) === undefined) {
       const b = emit_unfold(m);
       if (b === null) {
         return null;
@@ -2532,7 +2518,7 @@ function emit_body(sc: Scope, tm: HTerm, ty0: HTerm | null,
       const ret = fun_of(ck.k).ret;
       const once = FL.sites.get(ck.k) === 1 && !ck.b
         && !def_foreign(FL.book.tlds[ck.k])
-        && (!lay_box(ret) || lay_box(sc.seg.ret));
+        && (ret !== BOX || sc.seg.ret === BOX);
       if (sc.seg.def !== ck.k && (flat_call(x) || (dst === null && once))) {
         return emit_fuse(sc, ck, dst, true);
       }
@@ -2550,7 +2536,7 @@ function emit_body(sc: Scope, tm: HTerm, ty0: HTerm | null,
 
 function emit_fork(sc: Scope, x: Of<"Let">, ers: HTerm[]): void {
   const o = term_open(x);
-  const calls = x.v.map((v) => term_spine(v));
+  const calls = x.v.map(term_spine);
   const fork = calls.length > 1;
   const name = seg_name(sc, "j");
   let hold: Of<"Var">[] = [];
@@ -2586,8 +2572,7 @@ function emit_fork(sc: Scope, x: Of<"Let">, ers: HTerm[]): void {
   let depth = 0;
   calls.forEach((c, i) => {
     const cargs = emit_args({ ...sc, rest: [chain[i]] }, c);
-    const vs = i === 0 ? [...sc.uses]
-      : [[o.ps[i - 1], sc.uses.get(o.ps[i - 1])!] as [Of<"Var">, Bind]];
+    const vs = [...sc.uses].filter(([p]) => i === 0 || p === o.ps[i - 1]);
     const kn = seg_name(sc, "k");
     spare_flush(sc);
     const ws = vs.flatMap(([p, b]) =>
@@ -2707,7 +2692,7 @@ function emit_match(sc: Scope, x: Of<"Mat"> | Of<"Efq">,
               .map((w) => val_new([w], BOX));
           }];
       }
-      return lay_box(lay) ? [`term_aux(${sw}) == ${cid_mac(k)}`, h,
+      return lay === BOX ? [`term_aux(${sw}) == ${cid_mac(k)}`, h,
         (al) => node_fields(al, sw, k, true)]
         : [`${sw} == ${Object.keys(lay.arms!).indexOf(k)}`, h,
           () => val_arm(u, k)];
@@ -2797,17 +2782,17 @@ export function compile_book(book: Bend.Book): string {
     FL.segs = [];
     FL.spins = [];
     FL.img = [];
-    for (const [k, tld] of done_defs().reverse()) {
+    for (const [k, tld] of [...done_defs().reverse(),
+      ...done_defs(def_foreign)]) {
       memo_gc();
       const [dl, vals] = emit_open(scope_new(), k);
       FL.segs.push(dl.seg);
-      emit_body(dl, fun_of(k).h!, tld.T, [], vals, null);
-    }
-    for (const [k] of done_defs(def_foreign)) {
-      const [rl, vals] = emit_open(scope_new(), k);
-      FL.segs.push(rl.seg);
-      emit_put(rl, null, val_new([ctr_build(rl, k, vals.flatMap((v) => v.ws))],
-        BOX));
+      if (def_foreign(tld)) {
+        emit_put(dl, null, val_new([ctr_build(dl, k,
+          vals.flatMap((v) => v.ws))], BOX));
+      } else {
+        emit_body(dl, fun_of(k).h!, tld.T, [], vals, null);
+      }
     }
     graph_close(FL.lend, [...FL.lend].flatMap((l) => {
       const [a, r] = l.split("<");
@@ -2892,10 +2877,9 @@ export function compile_book(book: Bend.Book): string {
   const spins = [`CONSTV u64 STAT_IMG[] = { ${FL.img.join(", ") || 0} };`,
     ...FL.spins.map((s) => s.lines.join("\n"))].join("\n\n");
   const segs = FL.segs.map((seg) => {
-    const out = [`  WL_CASE(${seg.fid})`, "  {",
-      ...seg_take(seg).map((l) => "    " + l),
-      "    WL_OPEN", ...seg.spin ? ["    WL_SPIN"] : [],
-      ...seg_text(seg.lines, 2), ...seg.spin ? ["    WL_SPUN"] : [], "  }}"];
+    const out = [`  WL_CASE(${seg.fid})`, "  {", ...seg_text([...seg_take(seg),
+      "WL_OPEN", ...seg.spin ? ["WL_SPIN", ...seg.lines, "WL_SPUN"]
+        : seg.lines], 2), "  }}"];
     return (dev.has(seg.fid) ? out : ["#if !DEVICE", ...out, "#endif"])
       .join("\n");
   }).join("\n\n");
@@ -2937,18 +2921,18 @@ function js_call(sc: Scope, k: Name, args: HTerm[], tail: boolean): string {
   if (tld.$ === "ADT") {
     return "null";
   }
-  const intr = intr_of(k, true)?.JS ?? null;
-  if (intr === null && !fun_runs(tld)) {
+  const intr = intr_of(k, true);
+  if (intr !== undefined) {
+    return tpl(intr.JS, exprs.map((e) => ATOM.test(e) || STRLIT.test(e) ? e
+      : emit_hold(sc, [e], "x")[0]));
+  }
+  if (!fun_runs(tld)) {
     die("a live call into the law " + Bend.name_key(k));
   }
   const v = def_foreign(tld) && exprs.length === fun_of(k).lays.length - 1
     ? name_local(sc, "x") : "";
   if (v) {
     exprs.push(v);
-  }
-  if (intr !== null) {
-    return tpl(intr, exprs.map((e) => ATOM.test(e) || STRLIT.test(e) ? e
-      : emit_hold(sc, [e], "x")[0]));
   }
   const call = `${js_sat(k)}(${exprs.join(", ")})`;
   return v ? `(${v}) => ${call}`
@@ -2982,8 +2966,7 @@ function js_expr(sc: Scope, tm: HTerm, ty0: HTerm | null): string {
         return js_expr(sc, y, ty);
       }
       const k = (m.t as Of<"Ref">).k;
-      const it = intr_of(k, true);
-      if (it?.C === null) {
+      if (intr_of(k)?.C === null) {
         lay_el(m.all[0]);
       }
       return js_call(sc, k, m.args, false);
@@ -3087,11 +3070,10 @@ function js_match(sc: Scope, x: HTerm, ty: HTerm | null, args: string[]): void {
       ? [wd(j)] : [wd(j) + "[\"head\"]", wd(j + 1)].slice(0, e)]);
   } else {
     const native = OPTIMIZED[adt.k];
+    const is = (c: Name) => `${s}.$ === "${Bend.name_key(c)}"`;
     lv = mat_ctrs(x, adt).map(([k, h]): [string, HTerm, string[]] =>
-      k === "" || k === "_" ? [k && mat_ops((c) =>
-        `${s}.$ === "${Bend.name_key(c)}"`), h, [s]] : native === undefined
-      ? [`${s}.$ === "${Bend.name_key(k)}"`, h,
-        ctr_live(FL.book.ctrs[k]).map(([, f]) => `${s}["${f}"]`)]
+      k === "" || k === "_" ? [k && mat_ops(is), h, [s]] : native === undefined
+      ? [is(k), h, ctr_live(FL.book.ctrs[k]).map(([, f]) => `${s}["${f}"]`)]
       : [tpl(native[k].cond ?? "", [s]), h,
         (native[k].elim ?? []).map((e) => tpl(e, [s]))]);
   }
@@ -3112,16 +3094,16 @@ function js_def(sc: Scope, k: Name, def: Bend.Def): void {
     fun_of(d).live.length))).keys()].map((i) => "$" + i)
     : live.map(([, x]) => name_local(sc, x));
   if (def.i !== undefined) {
-    const doms = [...live, tele_unbind(def.T).doms.at(-1)!];
     params.push(name_local(sc, "k"));
-    const xs = params.map((p, i) =>
-      `${js_marshal(doms[i][2], true)}(${p})`);
-    const n = JSON.stringify(Bend.name_key(k));
-    return block(sc, `function ${js_sat(k)}(${params.join(", ")}) {`, () =>
-      file_push(sc, `return { $: ${n}, args: [${xs.slice(0, -1).join(", ")
-        }], kont: ${xs.at(-1)} };`));
   }
   block(sc, `function ${js_sat(k)}(${params.join(", ")}) {`, () => {
+    if (def.i !== undefined) {
+      const doms = [...live, tele_unbind(def.T).doms.at(-1)!];
+      const xs = params.map((p, i) =>
+        `${js_marshal(doms[i][2], true)}(${p})`);
+      return file_push(sc, `return { $: ${JSON.stringify(Bend.name_key(k))
+        }, args: [${xs.slice(0, -1).join(", ")}], kont: ${xs.at(-1)} };`);
+    }
     if (loop.length === 0) {
       return js_func(sc, h!, def.T, params);
     }
@@ -3225,7 +3207,7 @@ export function js_lib(book: Bend.Book, mod = false): string {
   FL = file_new(book, true);
   const outs = !mod ? null : [...new Set(FL.book.order)].filter((k) => {
     const t = FL.book.tlds[k];
-    return done_live(t) && !def_foreign(t) && t.b !== true && t.x === 0
+    return done_live(t) && t.b !== true && t.x === 0
       && io_base(FL.book, t.T) === null;
   });
   file_book(outs ?? ["main"]);
@@ -3234,8 +3216,8 @@ export function js_lib(book: Bend.Book, mod = false): string {
     memo_gc();
     js_def(sc, k, def);
   }
-  const srcs = effect_srcs(".js", "a foreign def without a .js import: ");
-  const effs = srcs.map((t) => `(() => {\n${t}\n})();\n\n`).join("");
+  const effs = effect_srcs(".js", "a foreign def without a .js import: ")
+    .map((t) => `(() => {\n${t}\n})();\n\n`).join("");
   const lib = outs === null ? "" : `export default {\n${outs.map((k) =>
     `  "${Bend.name_key(k)}": run_lib(${js_host(k)}, ${
       fun_of(k).lays.length}),`).join("\n")}\n};\n`;
@@ -3253,9 +3235,8 @@ export function js_book(book: Bend.Book): string {
   const lib = js_lib(book);
   const show = show_main();
   return `${lib}\n${RUNTIME_MAIN}\ncli(process.argv.slice(1));\nio_exit(${
-    js_sat("main")}, ${JSON.stringify(show && [show.map((c) =>
-      typeof c === "string" ? 0 : c), show.flatMap((c) =>
-      typeof c === "string" ? [Bend.name_key(c)] : [])])});`;
+    js_sat("main")}, ${JSON.stringify(show && show.map((c) =>
+      typeof c === "string" ? Bend.name_key(c) : c))});`;
 }
 
 // RuntimeC
@@ -3494,8 +3475,7 @@ typedef u32 __attribute__((may_alias)) u32a;
 #define CUBE      ((u64)CUBE_T * CUBE_T)
 #define CUBE_G    (1u << CUBE_LOG)
 #define LANES     ((u64)CUBE_T << CUBE_LOG)
-#define RING_LOG  (17 - CUBE_LOG)
-#define RING_LEN  (1ull << RING_LOG)
+#define RING_LEN  (1ull << (17 - CUBE_LOG))
 #define STAK_LEN  (1ull << 11)
 #define NCLS      8
 #define NCLS_ALL  32
@@ -3953,11 +3933,12 @@ INLINE u32 blk_cls(Term t) {
   return (u32)term_aux(t) & 31;
 }
 
-#define buf_wcls(c) ((c) == 0 ? 0 : (c) - 1)
+INLINE u32 blk_wcls(bool arr, u32 c) {
+  return arr ? c : c == 0 ? 0 : c - 1;
+}
 
 INLINE u32 blk_span(Term t) {
-  u32 c = blk_cls(t);
-  return term_tag(t) == TAG_ARR ? c : buf_wcls(c);
+  return blk_wcls(term_tag(t) == TAG_ARR, blk_cls(t));
 }
 
 FAR void term_drop(Env e, Term t) {
@@ -4179,7 +4160,7 @@ INLINE Term blk_half(Env e, Term a, u32 hi) {
     return a;
   }
   c -= 1;
-  u32 cw = arr ? c : buf_wcls(c);
+  u32 cw = blk_wcls(arr, c);
   u64 src = blk_loc(H, a);
   BLK_ALLOC(n, cw)
   if (!arr && c == 0) {
@@ -4200,7 +4181,7 @@ INLINE Term blk_new(Env e, bool arr, u64 d, u32 lgs, u32 n, THR Term* v) {
     d = 0;
   }
   u32 c = (u32)d + lgs;
-  BLK_ALLOC(l, arr ? c : buf_wcls(c))
+  BLK_ALLOC(l, blk_wcls(arr, c))
   for (u32 j = 0; arr && d > 0 && j < n; j += 1) {
     if (d >= 24 && !term_triv(v[j])) {
       err_post(H, ERR_CNTS);
@@ -4292,14 +4273,9 @@ INLINE void task_deal(DEV u64* H, Term join, u32 base, u32 stride, TG u32* cur) 
     Term k = H[loc + i];
     if (term_tag(k) == TAG_TSK) {
       H[loc + i] = TERM_HOLE;
-      u32 to;
-      if (stride != 0) {
-        to = ring_pick(base, stride, cur);
-      } else {
-        to = ring_flip(g & (u32)(LANES - 1));
-        g += 1;
-      }
-      ring_push(H, to, k);
+      ring_push(H, stride != 0 ? ring_pick(base, stride, cur)
+        : ring_flip(g & (u32)(LANES - 1)), k);
+      g += 1;
     }
   }
 }
@@ -4336,7 +4312,7 @@ ${spins}
 #undef  WL_AGAIN
 #define WL_SPIN
 #define WL_SPUN
-#define WL_AGAIN(F) __attribute__((musttail)) return WL_##F(WL_ALL)
+#define WL_AGAIN    WL_JMP
 
 typedef Term (PRESERVE(preserve_none) *WlFn)(WL_SIG);
 #define WL_X(F) WL_FN WL_##F(WL_SIG);
@@ -4876,18 +4852,6 @@ static void gpu_run(u32 f) {
 
 #endif
 
-#if BEND_CUDA
-
-static u64 gpu_hash(void) {
-  u64 key = 14695981039346656037ull ^ CUBE_LOG;
-  for (const char* p = BEND_SRC; *p != 0; p += 1) {
-    key = (key ^ (u8)*p) * 1099511628211ull;
-  }
-  return key;
-}
-
-#endif
-
 #if BEND_METAL
 
 static void gpu_fail(NSError* err) {
@@ -5001,8 +4965,12 @@ static void gpu_pass(u32 f) {
 
 #elif BEND_CUDA
 
-static void gpu_shape(int units) {
-  CUBE_LOG = 31 - CLZ(units < 16 ? 16 : units > 128 ? 128 : units);
+static u64 gpu_hash(void) {
+  u64 key = 14695981039346656037ull ^ CUBE_LOG;
+  for (const char* p = BEND_SRC; *p != 0; p += 1) {
+    key = (key ^ (u8)*p) * 1099511628211ull;
+  }
+  return key;
 }
 
 #define GPU_CHECK(fn, ...) do { \
@@ -5025,7 +4993,8 @@ static const char* gpu_probe(void) {
   }
   int l2 = 1 << 23;
   cuDeviceGetAttribute(&l2, CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE, gpu_dev);
-  gpu_shape(l2 >> 16);
+  int units = l2 >> 16;
+  CUBE_LOG  = 31 - CLZ(units < 16 ? 16 : units > 128 ? 128 : units);
   GPU_CHECK(cuDevicePrimaryCtxRetain, &ctx, gpu_dev);
   result = cuCtxSetCurrent(ctx);
   if (result != CUDA_SUCCESS) {
@@ -5230,19 +5199,16 @@ static void cube_run(u64* H, bool gpu) {
 static u64 corpus_size;
 
 static void* corpus_map(u64 size) {
-  u64   hint = 1ull << 45;
-  void* p    = pool_try((void*)hint, size);
-  while (p != (void*)hint && hint > size) {
+  for (u64 hint = 1ull << 45; hint > size; hint /= 2) {
+    void* p = pool_try((void*)hint, size);
+    if (p == (void*)hint) {
+      return p;
+    }
     if (p != MAP_FAILED) {
       munmap(p, size);
     }
-    hint /= 2;
-    p     = pool_try((void*)hint, size);
   }
-  if (p == MAP_FAILED) {
-    err_fail("reservation failed");
-  }
-  return p;
+  return pool_mmap(size);
 }
 
 static void corpus_lay(u64* H, u64 size) {
@@ -5563,7 +5529,7 @@ static Term io_node(Env e, u64 cid, Term a, Term b) {
 }
 
 static Term io_str(Env e, const char* p, u64 n) {
-  Term s    = term_pak(CID(SNil), 0);
+  Term  s;
   Term* hole = &s;
   u64  c = 0, need = 0, lo = 0x80, hi = 0xBF;
   for (u64 i = 0; i < n || need > 0; i += 1) {
@@ -5596,7 +5562,7 @@ static Term io_str(Env e, const char* p, u64 n) {
     *hole = hole == &s ? t : io_seal(e, t, CID(SCon));
     hole = &e.mem[l + 1];
   }
-  *hole = io_seal(e, term_pak(CID(SNil), 0), CID(SCon));
+  *hole = term_pak(CID(SNil), 0);
   return s;
 }
 
@@ -5779,11 +5745,10 @@ static void show_chr(u64 c, char q) {
 }
 
 static void show_f32(u32 x) {
-  char  buf[40];
-  int   n  = f32_text(buf, f32_unbox(x));
-  char* ep = memchr(buf, 'e', n);
-  int   m  = ep == NULL ? n : (int)(ep - buf);
+  char buf[40];
+  int  n = f32_text(buf, f32_unbox(x));
   buf[n] = 0;
+  int  m = (int)strcspn(buf, "e");
   if (strpbrk(buf, ".ni") == NULL) {
     printf("%.*s.0%s", m, buf, buf + m);
   } else {
@@ -5850,11 +5815,10 @@ static void show_val(Env e, u32 d, const Term* w, char chain) {
       }
       char o = "{[("[D[a + 3]];
       if (o == '{') {
-        printf("%s{", SHOW_NAMES[D[a]]);
-      } else if (chain != o) {
-        putchar(o);
+        fputs(SHOW_NAMES[D[a]], stdout);
       }
-      if (o == '{' || chain != o) {
+      if (chain != o) {
+        putchar(o);
         zs[zn++] = "}])"[D[a + 3]];
       }
       for (u32 j = 0; j < D[a + 2]; j += 1) {
@@ -5942,15 +5906,17 @@ OUTLINE void io_loop(u64* H) {
       io_wait(e, true);
       continue;
     }
-    if ((n & 63) == 0 && io_busy != 0) {
-      io_take(e);
-    }
     // A busy loop still checks due timers, and fds periodically.
-    if ((n & 63) == 0 && io_park != NULL) {
-      u64 now = io_tick();
-      if (now >= look || io_park->next->time - 1 < now) {
-        look = now + 10000000;
-        io_wait(e, false);
+    if ((n & 63) == 0) {
+      if (io_busy != 0) {
+        io_take(e);
+      }
+      if (io_park != NULL) {
+        u64 now = io_tick();
+        if (now >= look || io_park->next->time - 1 < now) {
+          look = now + 10000000;
+          io_wait(e, false);
+        }
       }
     }
     io_step(e, io_pop(&io_runs));
@@ -5973,7 +5939,7 @@ int main(int argc, char** argv) {
   io_argc = 1;
   for (int i = 1; i < argc; i += 1) {
     const char* a = argv[i];
-    const char* v = i + 1 < argc ? argv[i + 1] : NULL;
+    const char* v = i + 1 < argc ? argv[i + 1] : "";
     if (strcmp(a, "--") == 0) {
       while (i + 1 < argc) {
         io_argv[io_argc++] = argv[++i];
@@ -5988,20 +5954,20 @@ int main(int argc, char** argv) {
       }
       return 0;
     } else if (strcmp(a, "--threads") == 0) {
-      char* end = NULL;
-      thr = v != NULL ? strtol(v, &end, 10) : 0;
+      char* end;
+      thr = strtol(v, &end, 10);
       if (thr < 1 || *end != '\0') {
         err_fail("expected a thread count of 1 or more after --threads");
       }
       i += 1;
     } else if (strcmp(a, "--gpu") == 0) {
-      char*  end = NULL;
-      double n   = v != NULL ? strtod(v, &end) : 0;
-      u64    mul = end == NULL ? 0 : strcmp(end, "GB") == 0 ? 1ull << 30
+      char*  end;
+      double n   = strtod(v, &end);
+      u64    mul = strcmp(end, "GB") == 0 ? 1ull << 30
         : strcmp(end, "MB") == 0 ? 1ull << 20 : 0;
-      if (v != NULL && strcmp(v, "off") == 0) {
+      if (strcmp(v, "off") == 0) {
         gpu = 0;
-      } else if (v != NULL && (strcmp(v, "on") == 0 || (mul != 0 && n > 0))) {
+      } else if (strcmp(v, "on") == 0 || (mul != 0 && n > 0)) {
         gpu = 1;
         mem = (u64)(n * (double)mul);
       } else {
@@ -6125,38 +6091,37 @@ function cli(argv) {
 // show_val prints a pure main's value as term_show does (see show_main);
 // chain is the bracket it continues, or 0. show_chr escapes as char_show.
 
-function show_chr(c, q) {
+function show_chr(s, q) {
+  const c = s.codePointAt(0);
   const k = { 10: "n", 9: "t", 13: "r", 0: "0", 92: "\\" }[c]
-    ?? (c === q.codePointAt(0) ? q : null);
+    ?? (s === q ? q : null);
   return k !== null ? "\\" + k : c < 32 || c === 127
-    || (c >= 0xD800 && c <= 0xDFFF) || c > 0x10FFFF
-    ? "\\u{" + c.toString(16) + "}" : String.fromCodePoint(c);
+    || (c >= 0xD800 && c <= 0xDFFF) ? "\\u{" + c.toString(16) + "}" : s;
 }
 
-function show_val(D, N, d, v, chain) {
+function show_val(D, d, v, chain) {
   if (D[d] === 7) {
     const fs = Object.values(typeof v === "boolean"
       ? { $: v ? "True" : "False" } : v);
     let a = d + 3;
-    for (; N[D[a]] !== fs[0]; a += 4 + 2 * D[a + 2]) {}
+    for (; D[a + 1] !== fs[0]; a += 4 + 2 * D[a + 2]) {}
     const o = "{[("[D[a + 3]];
     let s = o === "{" ? fs[0] + "{" : chain === o ? "" : o;
     for (const [j, f] of fs.slice(1).entries()) {
       if (o === "[" ? j === 0 && chain === o : j > 0) {
         s += ", ";
       }
-      s += show_val(D, N, D[a + 5 + 2 * j], f, j === 1 && o !== "{" ? o : 0);
+      s += show_val(D, D[a + 5 + 2 * j], f, j === 1 && o !== "{" ? o : 0);
     }
     return o === "{" || chain !== o ? s + "}])"[D[a + 3]] : s;
   }
   return D[d] === 0 ? String(v)
     : D[d] === 1 ? f32_show(v).replace(/^-?\d+(?=e|$)/, "$&.0")
     : D[d] === 2 ? v + "n"
-    : D[d] === 3 ? "'" + show_chr(v.codePointAt(0), "'") + "'"
-    : D[d] === 4 ? "\"" + [...v].map((c) =>
-      show_chr(c.codePointAt(0), "\"")).join("") + "\""
+    : D[d] === 3 ? "'" + show_chr(v, "'") + "'"
+    : D[d] === 4 ? "\"" + [...v].map((c) => show_chr(c, "\"")).join("") + "\""
     : D[d] === 5 ? "{==}"
-    : "[" + v.map((x) => show_val(D, N, D[d + 1], x, 0)).join(", ") + "]";
+    : "[" + v.map((x) => show_val(D, D[d + 1], x, 0)).join(", ") + "]";
 }
 
 // Io
@@ -6173,7 +6138,7 @@ function show_val(D, N, d, v, chain) {
 function io_exit(main, show) {
   try {
     if (show !== null) {
-      io_out(1, io_bytes(show_val(...show, 0, run_loop(main()), 0) + "\n"));
+      io_out(1, io_bytes(show_val(show, 0, run_loop(main()), 0) + "\n"));
       process.exit(0);
     }
     process.exit(io_run(main));
