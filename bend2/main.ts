@@ -273,11 +273,9 @@ async function cli_file(args: string[]): Promise<void> {
     cli_say(1, HELP);
     process.exit(1);
   }
-  if (file.endsWith(".html")) {
-    if (outs.length !== 1 || only || checkup || publish) {
-      cli_fail("a page bundles with -o <dir>");
-    }
-    return cli_bundle(file, outs[0]);
+  if (file.endsWith(".html") && (outs.length !== 1 || only || verdict
+    || checkup || publish || argv.length !== 0)) {
+    cli_fail("a page bundles with -o <dir>");
   }
   if (publish && (outs.length !== 0 || only || verdict || checkup)) {
     cli_fail("--publish takes no other option");
@@ -293,6 +291,9 @@ async function cli_file(args: string[]): Promise<void> {
       + " import alone");
   }
   try {
+    if (file.endsWith(".html")) {
+      return await cli_bundle(file, outs[0]);
+    }
     if (publish) {
       return await cli_publish(file, named);
     }
@@ -878,6 +879,10 @@ function book_run(book: Bend.Book, argv: string[]): number {
 function book_err(e: unknown): string {
   if (e instanceof Check_Fail) {
     return FAIL + "\n" + book_err(e.why);
+  }
+  if (e instanceof AggregateError) {
+    return e.errors.map((m) => Bun.inspect(m, { colors: false })).join("\n")
+      || String(e);
   }
   const err = e as Bend.Err;
   if (e instanceof RangeError) {
