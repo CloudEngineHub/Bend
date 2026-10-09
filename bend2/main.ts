@@ -481,16 +481,70 @@ function cli_base(what?: string): void {
   cli_say(1, want.join("\n\n") + "\n");
 }
 
+// cli_bundle builds a page. Bun skips inline module scripts (#1400), so the
+// inline plugin moves each to a virtual file beside its page, padded so an
+// error points at the page's own line and column.
 async function cli_bundle(page: string, dir: string): Promise<void> {
-  const out = await Bun.build({
-    entrypoints: [page],
-    outdir: dir,
-    target: "browser",
-    minify: true,
-    plugins: [PLUGIN],
-  });
-  for (const a of out.outputs) {
-    cli_say(1, a.path + " (" + (a.size / 1024).toFixed(1) + "kb)\n");
+  const code = new Map<string, string>();
+  const inline: BunPlugin = {
+    name: "bend inline",
+    setup(build) {
+      build.onResolve({ filter: /\.bend-inline-\d+\.js$/ }, (a) => {
+        const id = path.resolve(a.resolveDir, a.path);
+        return code.has(id) ? { path: id, namespace: "inline" } : undefined;
+      });
+      build.onLoad({ filter: /.*/, namespace: "inline" }, (a) =>
+        ({ contents: code.get(a.path)!, loader: "js" }));
+      build.onLoad({ filter: /\.html$/ }, async (a) => {
+        const src = await Bun.file(a.path).text();
+        const mods: { id: string; text: string }[] = [];
+        let mod: { id: string; text: string } | null = null;
+        const html = new HTMLRewriter().on("script", {
+          element(el) {
+            const type = el.getAttribute("type")?.trim().toLowerCase();
+            mod = null;
+            if (type === "module" && !el.hasAttribute("src")) {
+              const name = "." + path.basename(a.path) + ".bend-inline-"
+                + mods.length + ".js";
+              mod = { id: path.join(path.dirname(a.path), name), text: "" };
+              mods.push(mod);
+              el.setAttribute("src", "./" + name);
+            }
+          },
+          text(t) {
+            if (mod) {
+              mod.text += t.text;
+              t.remove();
+            }
+          },
+        }).transform(src);
+        let end = 0;
+        let line = 0;
+        for (const m of mods) {
+          const at = src.indexOf(m.text, end);
+          line += src.slice(end, at).split("\n").length - 1;
+          const col = at - src.lastIndexOf("\n", at - 1) - 1;
+          code.set(m.id, "\n".repeat(line) + " ".repeat(col) + m.text);
+          line += m.text.split("\n").length - 1;
+          end = at + m.text.length;
+        }
+        return { contents: html, loader: "html" };
+      });
+    },
+  };
+  try {
+    const out = await Bun.build({
+      entrypoints: [page],
+      outdir: dir,
+      target: "browser",
+      minify: true,
+      plugins: [inline, PLUGIN],
+    });
+    for (const a of out.outputs) {
+      cli_say(1, a.path + " (" + (a.size / 1024).toFixed(1) + "kb)\n");
+    }
+  } catch (e) {
+    throw book_err(e).replace(/\.([^/\\]+)\.bend-inline-\d+\.js/g, "$1");
   }
 }
 
