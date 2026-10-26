@@ -2,9 +2,10 @@
 // =======
 
 const PROCESS_WORKER = `
-const { errno, signals } = require("node:os").constants;
-const { parentPort } = require("node:worker_threads");
-const { spawn } = require("node:child_process");
+// Eval workers may inherit module mode, where require is undefined.
+const { errno, signals } = process.getBuiltinModule("node:os").constants;
+const { parentPort } = process.getBuiltinModule("node:worker_threads");
+const { spawn } = process.getBuiltinModule("node:child_process");
 let port;
 let flag;
 
