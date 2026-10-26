@@ -40,10 +40,34 @@ function chan_wake(row, x) {
   return w.item;
 }
 
+// The buffer is ring[head, head+size): Array.shift drains n in n^2 on V8.
+function chan_push(row, value) {
+  row.ring[row.head + row.size] = value;
+  row.size += 1;
+}
+
+function chan_pull(row) {
+  const v = row.ring[row.head];
+  row.ring[row.head] = undefined;
+  row.size -= 1;
+  if (row.size === 0) {
+    row.head = 0;
+  } else {
+    row.head += 1;
+    if (row.head > row.size + 64) {
+      // Compacts after size+64 receives, so a receive moves O(1) values.
+      row.ring.copyWithin(0, row.head, row.head + row.size);
+      row.ring.length = row.size;
+      row.head = 0;
+    }
+  }
+  return v;
+}
+
 function chan_take(row) {
-  const v = row.ring.shift();
+  const v = chan_pull(row);
   if (chan_head(row) !== undefined) {
-    row.ring.push(chan_wake(row, chan_done()));
+    chan_push(row, chan_wake(row, chan_done()));
   }
   return v;
 }
@@ -85,8 +109,8 @@ function chan_put(row, value) {
     chan_wake(row, { $: CID(Some), value: value });
     return chan_done();
   }
-  if (row.ring.length < row.room) {
-    row.ring.push(value);
+  if (row.size < row.room) {
+    chan_push(row, value);
     return chan_done();
   }
   return undefined;
@@ -94,7 +118,7 @@ function chan_put(row, value) {
 
 // Receives without waiting: Some{v}, None{} at the end, undefined if not.
 function chan_get(row) {
-  if (row.ring.length > 0) {
+  if (row.size > 0) {
     return { $: CID(Some), value: chan_take(row) };
   }
   const w = chan_head(row);
@@ -119,7 +143,8 @@ function chan_try(row, x, item, ms, k) {
 }
 
 function chan_new(room) {
-  return { room: Number(room), ring: [], wait: [], shut: false };
+  return { room: Number(room), ring: [], head: 0, size: 0,
+    wait: [], shut: false };
 }
 
 function chan_send(row, value, k) {
