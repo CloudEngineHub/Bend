@@ -542,6 +542,16 @@ def Window.grab(window: Window, on: Bool) -> IO(Window):
   import "./effs/window.c"
   import "./effs/window_grab.js"
 
+# Request fullscreen without changing the logical drawing resolution or
+# pointer coordinates. The desktop applies the request asynchronously;
+# the handle comes back either way. A desktop without fullscreen (no
+# window manager, or no XRender) fails with ENOTSUP, and the Mac with
+# EAGAIN while the window is hidden or minimized.
+def Window.fullscreen(window: Window, on: Bool) ->
+  IO(Window & Result<&1, &1, U32 & String, Unit>):
+  import "./effs/window.c"
+  import "./effs/window_fullscreen.js"
+
 def Window.close(window: Window) -> IO(Unit):
   import "./effs/window.c"
   import "./effs/window_close.js"
