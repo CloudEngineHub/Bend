@@ -2276,6 +2276,7 @@ export function parse_term_do_stmt(p: Parse, m: Name, ts: LTerm[], col: number):
   const beg = p.pos;
   if (parse_word(p, "return")) {
     const e = parse_term(p);
+    parse_do_end(p);
     return parse_call(p, m + ".pure", [...ts, e], parse_span(p, beg));
   }
   const t = parse_term(p);
@@ -2288,6 +2289,7 @@ export function parse_term_do_stmt(p: Parse, m: Name, ts: LTerm[], col: number):
   if (typed && !asg) {
     parse_eat(p, "<-");
   } else if (!typed && !step && !parse_take(p, "<-")) {
+    parse_do_end(p);
     const k = parse_reso(p, m);
     return Ann(t, p.book.tlds[k]?.$ === "ADT" ? ADT(k, ts, t.s)
       : parse_call(p, m, ts, t.s), t.s);
@@ -2304,6 +2306,13 @@ export function parse_term_do_stmt(p: Parse, m: Name, ts: LTerm[], col: number):
     return Let([x.k], [x.i], [Ann(v, A, s)], f, s, [x.q]);
   }
   return parse_call(p, m + ".bind", [...ts.slice(0, -1), A, ...ts.slice(-1), v, Lam(x.k, x.i, f, s, x.q)], s);
+}
+
+export function parse_do_end(p: Parse): void {
+  parse_skip(p);
+  if (parse_at(p, "=") && !parse_at(p, "==") && !parse_at(p, "=>")) {
+    parse_fail(p, "a do-block let with its type (write \"x : T = ...\")");
+  }
 }
 
 // Body
