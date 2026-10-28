@@ -1688,8 +1688,7 @@ function node_fields(sc: Scope, t: string, r: string | null, k: Name,
   } else if (r === null) {
     spare_free(sc, spare);
   }
-  return val_arm(val_new(ws, node, node.ks.map((kd) =>
-    kd === "box" ? r : null)));
+  return val_arm(val_new(ws, node, node.ks.map(() => r)));
 }
 
 // Val
@@ -1742,8 +1741,7 @@ function val_sink(sc: Scope, v: Val): void {
 }
 
 function val_to(sc: Scope, v: Val, lay: Lay): Val {
-  return lay_eq(v.lay, lay) ? v : lay === BOX ? val_new([val_box(sc, v)], BOX,
-    v.lay.arms === null ? v.rs : [])
+  return lay_eq(v.lay, lay) ? v : lay === BOX ? val_new([val_box(sc, v)], BOX)
     : v.lay === BOX ? val_unbox(sc, v, lay)
     : val_arms(sc, lay, v.ws[0], (k) => val_arm(v, k));
 }
@@ -1788,7 +1786,7 @@ function val_box(sc: Scope, v: Val): string {
 
 function val_unbox(sc: Scope, v: Val, lay: Lay): Val {
   if (lay.arms === null) {
-    return val_new(v.ws, lay, v.rs);
+    return val_new(v.ws, lay);
   }
   const t = emit_alias(sc, v.ws[0], "u");
   return val_arms(sc, lay, t, (k) => node_fields(sc, t, v.rs[0], k), true);
@@ -1939,13 +1937,11 @@ function unit_new(name: string, emit: () => void): Unit {
 }
 
 function unit_emit(u: Unit): void {
-  const up = FL.unit;
   FL.folds.clear();
-  Object.assign(u, { segs: [], n: 0, lent: new Set(), lends: [],
+  FL.unit = Object.assign(u, { segs: [], n: 0, lent: new Set(), lends: [],
     clos: new Set() });
-  FL.unit = u;
   u.emit();
-  FL.unit = up;
+  FL.unit = null;
 }
 
 // Show
@@ -2289,6 +2285,7 @@ function emit_each(sc: Scope, xs: HTerm[], ats: Lay[] = [],
 }
 
 function emit_put(sc: Scope, dst: Val | null, v: Val): void {
+  bind_dead(sc, []);
   if (dst === null) {
     spare_flush(sc);
   }
@@ -2299,7 +2296,7 @@ function emit_put(sc: Scope, dst: Val | null, v: Val): void {
   }
 }
 
-function emit_spin(sc: Scope, ck: Spine, tail = false): Val {
+function emit_spin(sc: Scope, ck: Spine): Val {
   const k = ck.k!;
   const { lays, ret } = fun_of(k);
   const ws = emit_args(sc, ck).flatMap((v) => v.ws);
@@ -2314,8 +2311,8 @@ function emit_spin(sc: Scope, ck: Spine, tail = false): Val {
     : [w = emit_alias(sc, w, "a"), arr_loc(sc, w)]);
   block(sc, `if (${name}(${["e", o, ...xs].join(", ")}) == 0) {`, () =>
     file_push(sc, "return 0;"));
-  bind_dead(sc, tail ? [] : sc.rest, tail ? undefined
-    : ck.xs.map(term_strip).filter((x) => x.$ === "Var").map(probe_of));
+  bind_dead(sc, sc.rest,
+    ck.xs.map(term_strip).filter((x) => x.$ === "Var").map(probe_of));
   return out;
 }
 
@@ -2325,8 +2322,8 @@ function emit_open(k: Name): [Scope, Val[]] {
   const { live, lays, ret } = fun_of(k);
   const brw = brw_of(k);
   const vals = lays.map((l, i) => val_new(l.ks.map(() =>
-    name_local(sc, live[i]?.[1] ?? "k")), l, l.ks.map((kd) =>
-    brw[i] && kd === "box" ? arg_key(k, i) : null)));
+    name_local(sc, live[i]?.[1] ?? "k")), l, l.ks.map(() =>
+    brw[i] ? arg_key(k, i) : null)));
   return [{ ...sc, seg: seg_new(k, ret, vals), def: k }, vals];
 }
 
@@ -2642,15 +2639,13 @@ function emit_body(sc: Scope, tm: HTerm, ty0: HTerm | null, args: Val[],
       sc = { ...sc, rest: [] };
       const ck = term_spine(x);
       if (ck.k === null) {
-        const v = emit_expr(sc, x, ty, dst?.lay ?? sc.seg.ret);
-        bind_dead(sc, []);
-        return emit_put(sc, dst, v);
+        return emit_put(sc, dst, emit_expr(sc, x, ty, dst?.lay ?? sc.seg.ret));
       }
       const { h, ret } = fun_of(ck.k);
       const once = FL.sites.get(ck.k) === 1 && !ck.b && !def_foreign(ck.tld)
         && (ret !== BOX || sc.seg.ret === BOX);
       if (sc.seg.def !== ck.k && (flat_call(x) || (dst === null && once))) {
-        return flat_of(ck.k) ? emit_put(sc, dst, emit_spin(sc, ck, true))
+        return flat_of(ck.k) ? emit_put(sc, dst, emit_spin(sc, ck))
           : emit_body({ ...sc, def: ck.k }, h!, ck.tld!.T,
             emit_args(sc, ck, true), dst);
       }
@@ -2811,7 +2806,6 @@ function emit_match(sc: Scope, x: Of<"Mat"> | Of<"Efq">,
   const sw = u.ws[0];
   const tab = emit_tab(sc, cells, ret, sw);
   if (tab !== null) {
-    bind_dead(sc, []);
     return emit_put(sc, dst, val_new([tab], lay_of(ret)));
   }
   const is = (c: Name) => `term_aux(${sw}) == ${cid_mac(c)}`;
@@ -3199,14 +3193,12 @@ function js_expr(sc: Scope, tm: HTerm, ty0: HTerm | null = null): string {
       }
       const arg = name_local(sc, "x");
       const cl = { ...sc, seg: seg_new("", BOX, []) };
-      cl.seg.tab = 2;
       FL.unit!.segs.push(cl.seg);
       const name = name_id("$", seg_name("c"));
-      js_func(cl, x, ty, [arg]);
       const ps = [...new Set(Bend.pmap_to_array(term_uses(x))
         .filter(([, n]) => n).map(([i]) => FL.names.get(i) ?? PROBES[i].k))];
-      cl.seg.lines = [`function ${name}(${ps}) {`, `  return (${arg}) => {`,
-        ...cl.seg.lines, "  }", "}"];
+      block(cl, `function ${name}(${ps}) {`, () =>
+        block(cl, `return (${arg}) => {`, () => js_func(cl, x, ty, [arg])));
       return `run_clo(${name}(${ps}))`;
     }
     default: {
@@ -3267,11 +3259,10 @@ function js_match(sc: Scope, x: HTerm, ty: HTerm | null, args: string[]): void {
   const wd = (j: number) => `u32_to_word(${bits})` + "[\"tail\"]".repeat(j);
   const native = OPTIMIZED[adt.k];
   const is = (c: Name) => `${s}.$ === "${js_tag(c)}"`;
-  const lv: [string, HTerm, string[]][] = adt.k === "Nat"
-    ? rows!.map(([arm, , val, flds]) => [`${s} === ${val}`, arm,
-      [`(${s} - ${val})`].slice(0, flds)])
-    : rows !== null ? rows.map(([a, b, v, f]) => [lits_cond(bits, b, v), a,
-      f === 1 ? [wd(b)] : [wd(b) + "[\"head\"]", wd(b + 1)].slice(0, f)])
+  const lv: [string, HTerm, string[]][] = rows !== null
+    ? rows.map(([a, b, v, f]) => [lits_cond(bits, b, v), a,
+      adt.k === "Nat" ? [`(${s} - ${v})`].slice(0, f)
+      : f === 1 ? [wd(b)] : [wd(b) + "[\"head\"]", wd(b + 1)].slice(0, f)])
     : mat_ctrs(x, adt).map(([k, h]) => {
       if (k === "" || k === "_") {
         return [k && mat_ops(is), h, [s]];
@@ -5241,6 +5232,8 @@ static u64* gpu_map(u64 bytes) {
 #else
   cuMemAdvise(p, bytes, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, gpu_dev);
 #endif
+  cuMemsetD8(p, 0, STAK_OFF * 8);
+  cuCtxSynchronize();
   return (u64*)(uintptr_t)p;
 }
 
@@ -5473,12 +5466,6 @@ static u64* corpus_setup(bool gpu, long threads, u64 bytes) {
     & ~16383ull;
   CORPUS     = gpu ? gpu_map(size) : corpus_map(size);
   u64* H     = CORPUS;
-#if BEND_CUDA
-  if (gpu) {
-    cuMemsetD8((CUdeviceptr)(uintptr_t)H, 0, STAK_OFF * 8);
-    cuCtxSynchronize();
-  }
-#endif
   corpus_lay(H, size);
   memcpy(H + STAT_OFF, STAT_IMG, STAT_LEN * sizeof(u64));
   a32_store(a32_at(H, H_BUMP), 1);
