@@ -1178,12 +1178,10 @@ function arm_self(arm: HTerm, n: number, self: HTerm,
     open &&= s.$ === "Ann";
     return s.$ === "Ctr" && ps.length && term_same(s, back(ps)) ? self : null;
   });
-  if (ps.length < n) {
-    return [out, n];
-  }
   const b = ps.reduce((t) => term_open(Bend.term_strip(t) as Of<"Lam">).b,
     out);
-  return ps.some((p) => term_use(term_uses(b), p) > 0) ? [out, n] : [b, 0];
+  return ps.length < n || ps.some((p) => term_use(term_uses(b), p) > 0)
+    ? [out, n] : [b, 0];
 }
 
 function mat_rows(sc: Scope, x: HTerm, ty: HTerm | null, self: HTerm) {
@@ -2353,11 +2351,10 @@ function emit_native(sc: Scope, k: Name): string {
   return seg_ref(sc, name);
 }
 
-function emit_intr(sc: Scope, k: Name, it: Intr, m: Spine,
-  ty: HTerm | null): Val {
+function emit_intr(sc: Scope, k: Name, m: Spine, ty: HTerm | null): Val {
   const args = emit_each(sc, m.args);
   const op = op_name(k);
-  const C = it.C!;
+  const C = intr_of(k)!.C!;
   if (/^array_(get|get_unchecked|new|clone)$/.test(op)
     && lay_el(m.all[0]).ks.includes("box")
     && !(op === "array_new" && ctr_packed(m.all[2]))) {
@@ -2551,9 +2548,8 @@ function emit_expr(sc: Scope, tm: HTerm, ty0: HTerm | null,
         return emit_expr(sc, y, ty, at);
       }
       const g = m.t as Of<"Ref">;
-      const intr = intr_of(g.k);
-      if (intr) {
-        return emit_intr(sc, g.k, intr, m, ty);
+      if (intr_of(g.k)) {
+        return emit_intr(sc, g.k, m, ty);
       }
       if (m.tld?.$ === "ADT") {
         return emit_zero(ty);
